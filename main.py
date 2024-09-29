@@ -1,11 +1,20 @@
 import requests
 import json
 import time
+import os
 from datetime import datetime
+from dotenv import load_dotenv
 
-API_URL = ""
-MODEL = "llama-3.2-1b-instruct"
-MAX_TOKENS = 4000
+load_dotenv()
+
+API_URL = os.getenv("API_URL")
+MODEL = os.getenv("MODEL")
+MAX_TOKENS = os.getenv("MAX_TOKENS")
+TEMPERATURE = os.getenv("TEMPERATURE")
+TOP_P = os.getenv("TOP_P")
+TOP_K = os.getenv("TOP_K")
+FREQUENCY_PENALTY = os.getenv("FREQUENCY_PENALTY")
+PRESENCE_PENALTY = os.getenv("PRESENCE_PENALTY")
 
 SYSTEM_PROMPT_B = """
 You are a friendly and curious language model that should help the user better understand themselves.
@@ -76,12 +85,12 @@ def generate_response(messages):
     data = {
         "model": MODEL,
         "messages": messages,
-        "max_tokens": 4000,
-        "temperature": 0.7,
-        "top_p": 0.9,
-        "top_k": 40,
-        "frequency_penalty": 0.5,
-        "presence_penalty": 0
+        "max_tokens": MAX_TOKENS,
+        "temperature": TEMPERATURE,
+        "top_p": TOP_P,
+        "top_k": TOP_K,
+        "frequency_penalty": FREQUENCY_PENALTY,
+        "presence_penalty": PRESENCE_PENALTY
     }
     response = requests.post(API_URL, headers=headers, data=json.dumps(data))
     return response.json()["choices"][0]["message"]["content"]
@@ -97,7 +106,25 @@ def log_conversation(file_path, role, message):
     print(console_log_entry)
 
 
-def self_reflection_experiment(num_iterations=500):
+def handle_stop_response(model_name, answer, log_file):
+    log_conversation(log_file, model_name, answer)
+    print(f"Model {model_name} requested to stop. Ending experiment.")
+    return True
+
+
+def handle_question_response(conversation_a, conversation_b, model_name, answer, log_file):
+    log_conversation(log_file, model_name, answer)
+    maintainer_input = input("Need human answer: ")
+    maintainer_message = f"[MAINTAINER] {maintainer_input}"
+    conversation_a.append({"role": "user", "content": maintainer_message})
+    conversation_b.append({"role": "user", "content": maintainer_message})
+    conversation_a = manage_conversation_size(conversation_a, MAX_TOKENS)
+    conversation_b = manage_conversation_size(conversation_b, MAX_TOKENS)
+    log_conversation(log_file, "MAINTAINER", maintainer_input)
+    return True
+
+
+def self_reflection_experiment(num_iterations=50):
     conversation_a = [{"role": "system", "content": SYSTEM_PROMPT_A}]
     conversation_b = [{"role": "system", "content": SYSTEM_PROMPT_B}]
 
@@ -115,44 +142,34 @@ def self_reflection_experiment(num_iterations=500):
         # Query B: answer the question
         conversation_b.append({"role": "user", "content": question})
         answer = generate_response(conversation_b)
-
-        if "STOP" in answer:
-            print("\033[91mModel Respondent requested to stop. Ending experiment.\033[0m")
-            return
-
-        if "QUESTION" in answer:
-            maintainer_input = input("\033[92mNeed human answer: \033[0m")
-            maintainer_message = f"[MAINTAINER] {maintainer_input}"
-            conversation_a.append({"role": "user", "content": maintainer_message})
-            conversation_b.append({"role": "user", "content": maintainer_message})
-            log_conversation(log_file, "MAINTAINER", maintainer_input)
-            continue
-
-        conversation_b.append({"role": "assistant", "content": answer})
-        conversation_b = manage_conversation_size(conversation_b, MAX_TOKENS)
-        log_conversation(log_file, "Respondent", answer)
+       
+        if answer.strip().upper() == "STOP":
+            if handle_stop_response("Respondent", answer, log_file):
+                return
+        elif answer.strip().upper() == "QUESTION":
+            if handle_question_response(conversation_a, conversation_b, "Respondent", answer, log_file):
+                continue
+        else:
+            conversation_b.append({"role": "assistant", "content": answer})
+            conversation_b = manage_conversation_size(conversation_b, MAX_TOKENS)
+            log_conversation(log_file, "Respondent", answer)
 
         # Analyze answer and generate next question (query A)
         conversation_a.append({"role": "user", "content": answer})
         analysis_and_question = generate_response(conversation_a)
-
-        if "STOP" in analysis_and_question:
-            print("\033[91mModel Respondent requested to stop. Ending experiment.\033[0m")
-            return
-
-        if "QUESTION" in analysis_and_question:
-            maintainer_input = input("\033[92mNeed human answer: \033[0m")
-            maintainer_message = f"[MAINTAINER] {maintainer_input}"
-            conversation_a.append({"role": "user", "content": maintainer_message})
-            conversation_b.append({"role": "user", "content": maintainer_message})
-            log_conversation(log_file, "MAINTAINER", maintainer_input)
-            continue
-
-        conversation_a.append({"role": "assistant", "content": analysis_and_question})
-        conversation_a = manage_conversation_size(conversation_a, MAX_TOKENS)
-        # Extract new question from A's response
-        question = analysis_and_question.split('\n')[-1].strip()
-        log_conversation(log_file, "Inquirer", f"{analysis_and_question}")
+        
+        if analysis_and_question.strip().upper() == "STOP":
+            if handle_stop_response("Inquirer", analysis_and_question, log_file):
+                return
+        elif analysis_and_question.strip().upper() == "QUESTION":
+            if handle_question_response(conversation_a, conversation_b, "Inquirer", analysis_and_question, log_file):
+                continue
+        else:
+            conversation_a.append({"role": "assistant", "content": analysis_and_question})
+            conversation_a = manage_conversation_size(conversation_a, MAX_TOKENS)
+            # Extract new question from A's response
+            question = analysis_and_question.split('\n')[-1].strip()
+            log_conversation(log_file, "Inquirer", f"{analysis_and_question}")
 
         print(f"\nIteration {i+1} completed.\n")
 
